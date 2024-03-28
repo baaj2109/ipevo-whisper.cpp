@@ -23,6 +23,8 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#include "unicode.h"
+
 
 #include <atomic>
 #include <algorithm>
@@ -434,6 +436,8 @@ struct whisper_segment {
 
     std::vector<whisper_token_data> tokens;
 
+    float no_speech_prob;
+
     bool speaker_turn_next;
 };
 
@@ -746,6 +750,7 @@ struct whisper_sequence {
     // the accumulated transcription in the current iteration (used to truncate the tokens array)
     int result_len;
 
+    double no_speech_probs;  // the probability of the silence
     double sum_logprobs_all; // the sum of the log probabilities of the tokens
     double sum_logprobs;     // the sum of the log probabilities of the tokens (first result_len tokens)
     double avg_logprobs;     // the average log probability of the tokens
@@ -775,6 +780,11 @@ struct whisper_decoder {
 
     // work container used to avoid memory allocations
     std::vector<whisper_pair<double, whisper_vocab::id>> logits_id;
+
+    float tt_prob;
+    float shift_nosp_prob;
+    float no_speech_prob;
+    float eot_prob;
 
     mutable std::mt19937 rng; // used for sampling at t > 0.0
 };
@@ -4571,6 +4581,7 @@ struct whisper_full_params whisper_full_default_params(enum whisper_sampling_str
         /*.entropy_thold     =*/  2.4f,
         /*.logprob_thold     =*/ -1.0f,
         /*.no_speech_thold   =*/  0.6f,
+        /*.heuristic         =*/ true,
 
         /*.greedy            =*/ {
             /*.best_of   =*/ -1,
@@ -4704,12 +4715,79 @@ static int whisper_wrap_segment(struct whisper_context & ctx, struct whisper_sta
     return res;
 }
 
+
+// ref: https://github.com/openai/whisper/blob/ba3f3cd54b0e5b8ce1ab3de13e32122d0d5f98ab/whisper/decoding.py#L689-L693
+static void whisper_no_speech_probs(
+              struct whisper_context & ctx,
+               struct whisper_state  & state,
+              struct whisper_decoder & decoder,
+          std::vector<whisper_token> & prompt_init) {
+
+    const auto & vocab= ctx.vocab;
+    const int  n_logits = vocab.id_to_token.size();
+    const int  logits_offset = decoder.i_batch - (prompt_init.size() - 1);
+    double no_speech_probs = 0.0;
+
+    WHISPER_ASSERT(n_logits == ctx.vocab.n_vocab);
+
+    // extract the logits for the SOT token
+    // we will be mutating, and therefore we don't want to use the ctx.logits buffer directly
+    auto & logits   = decoder.logits;
+    {
+        logits.resize(n_logits);
+        memcpy(logits.data(), state.logits.data() + logits_offset*n_logits, n_logits*sizeof(float));
+    }
+
+    // softmax
+    // ref: https://pytorch.org/docs/stable/generated/torch.nn.Softmax.html
+    {
+        double sum = 0.0f;
+        for (auto & i : logits) {
+            sum += expf(i);
+        }
+        no_speech_probs = static_cast<double>(expf(logits[vocab.token_nosp]) / sum);
+    }
+
+    decoder.sequence.no_speech_probs = no_speech_probs;
+}
+
+
 static const std::vector<std::string> non_speech_tokens = {
     "\"", "#", "(", ")", "*", "+", "/", ":", ";", "<", "=", ">", "@", "[", "\\", "]", "^",
     "_", "`", "{", "|", "}", "~", "「", "」", "『", "』", "<<", ">>", "<<<", ">>>", "--",
     "---", "-(", "-[", "('", "(\"", "((", "))", "(((", ")))", "[[", "]]", "{{", "}}", "♪♪",
     "♪♪♪","♩", "♪", "♫", "♬", "♭", "♮", "♯"
 };
+
+void softmax(std::vector<float> &input){
+    float maxn = 0.0;
+    float sum = 0.0;
+    maxn = *max_element(input.begin(), input.end());
+    for(int i = 0; i < 10; i++) {
+        WHISPER_LOG_INFO("[%s %d] %d %f\n",__func__,__LINE__, i, input[i]);
+    }
+    std::for_each(input.begin(), input.end(), [maxn, &sum](float& d) {
+        d = expf(d-maxn);
+        sum += d;
+    });     //cmath c11
+    for(int i = 0; i < 10; i++) {
+        WHISPER_LOG_INFO("[%s %d] %d %f\n",__func__,__LINE__, i, input[i]);
+    }
+    
+    std::for_each(input.begin(), input.end(), [sum](float& d) {
+        d = d / sum;
+    });
+    for(int i = 0; i < 10; i++) {
+        WHISPER_LOG_INFO("[%s %d] %d %f\n",__func__,__LINE__, i, input[i]);
+    }
+    
+    
+//    for (int i = 0; i < input.size(); i++) {
+        // pring index and value
+        // WHISPER_LOG_INFO("[softmax %d]%3d: %8.6f\n", __LINE__, i, input[i]);
+//    }
+    return;
+}
 
 // process the logits for the selected decoder
 // - applies logit filters
@@ -4944,6 +5022,60 @@ static void whisper_process_logits(
             }
         }
     }
+
+//    // test
+//    {
+//        std::vector<float> end_token_logits;
+//        end_token_logits.resize(n_logits);
+//        int token_size = state.logits.size() / n_logits;
+////        WHISPER_LOG_INFO("[whisper logits %d] token size: %d, n logits: %d, total: %d\n",__LINE__,token_size, n_logits, state.logits.size());
+////        WHISPER_LOG_INFO("[whisper logits %d] decoder.i_batch: %d\n", __LINE__, decoder.i_batch);
+//
+//        memcpy(end_token_logits.data(), state.logits.data() + (n_logits * (token_size - 1)), n_logits * sizeof(float));
+//
+//        softmax(end_token_logits);
+//        
+//        float no_speech_prob = end_token_logits[vocab.token_nosp];
+//        decoder.no_speech_prob = no_speech_prob;
+////        WHISPER_LOG_INFO("[%s %d] no_speech_prob: %f\n", __func__ ,__LINE__, no_speech_prob);
+//
+//        float eot_prob = end_token_logits[vocab.token_eot];
+//        decoder.eot_prob = eot_prob;
+//        
+//        std::vector<int> _special_tokens = {
+//            vocab.token_nosp, vocab.token_eot, vocab.token_sot,
+//            vocab.token_solm, vocab.token_not
+//        };
+//        for(auto _token : _special_tokens){
+//            float _token_prob = end_token_logits[_token];
+////            WHISPER_LOG_INFO("[%s %d] _special_tokens: %d %f\n ", __func__,__LINE__, _token, _token_prob);
+//        }
+//        
+////        float sum_of_elems = 0; //std::accumulate(end_token_logits.begin()+ 50365, end_token_logits.end(), 0);
+////        for(int i = 0; i < end_token_logits.size();i++) {
+////            if (i > 50364) {
+////                sum_of_elems += end_token_logits[i];
+////            }
+////        }
+//        
+//        float _sum_of_elems = std::accumulate(end_token_logits.begin() + 50365, end_token_logits.end(), 0.0);
+//        
+////        WHISPER_LOG_INFO("[whisper logits %d] sum of TT* token: %f >< %f\n", __LINE__, sum_of_elems, _sum_of_elems);
+//        decoder.tt_prob = _sum_of_elems;
+//        decoder.shift_nosp_prob = end_token_logits[50719];
+//        
+//        
+//        const float logit_max = *std::max_element(end_token_logits.begin(), end_token_logits.end());
+//        const int logit_max_index = end_token_logits.at(logit_max);
+//        auto it = find(end_token_logits.begin(), end_token_logits.end(), logit_max);
+//        if (it != logits.end()) {
+//            int index = it - end_token_logits.begin();
+//            auto _token_str = vocab.id_to_token.at(index).c_str();
+////                WHISPER_LOG_INFO("[whisper logits %d] max confidence index= %d %s \n", __LINE__, index, _token_str);
+//        }
+////            WHISPER_LOG_INFO("[whisper logits %d] logit_max= %f\n", __LINE__, logit_max);
+//    }
+//    
 
 #if 0
     // print first 100 logits - token string : logit
@@ -5512,6 +5644,8 @@ int whisper_full_with_state(
 
                     state->decoders[0].i_batch = prompt.size() - 1;
 
+                    whisper_no_speech_probs(*ctx, *state, state->decoders[0], prompt_init);
+
                     whisper_process_logits(*ctx, *state, state->decoders[0], params, t_cur);
 
                     for (int j = 1; j < n_decoders_cur; ++j) {
@@ -5522,6 +5656,8 @@ int whisper_full_with_state(
                         memcpy(decoder.probs.data(),    state->decoders[0].probs.data(),    decoder.probs.size()*sizeof(decoder.probs[0]));
                         memcpy(decoder.logits.data(),   state->decoders[0].logits.data(),   decoder.logits.size()*sizeof(decoder.logits[0]));
                         memcpy(decoder.logprobs.data(), state->decoders[0].logprobs.data(), decoder.logprobs.size()*sizeof(decoder.logprobs[0]));
+                        decoder.sequence.no_speech_probs = state->decoders[0].sequence.no_speech_probs;
+                        
                     }
 
                     state->t_sample_us += ggml_time_us() - t_start_sample_us;
@@ -5925,10 +6061,34 @@ int whisper_full_with_state(
 
             const auto & tokens_cur = best_decoder.sequence.tokens;
 
+            float _non_speech_probs_from_sequence = best_decoder.sequence.no_speech_probs;
+
             // [EXPERIMENTAL] Token-level timestamps with DTW
             const auto n_segments_before = state->result_all.size();
 
             //WHISPER_LOG_DEBUG("prompt_init.size() = %d, prompt.size() = %d, result_len = %d, seek_delta = %d\n", prompt_init.size(), prompt.size(), result_len, seek_delta);
+
+            float _tt_prob = best_decoder.tt_prob;
+            float _shift_nosp_prob = best_decoder.shift_nosp_prob;
+//            WHISPER_LOG_INFO("[best %d] tokens_cur size: %zu\n", __LINE__,tokens_cur.size());
+            for(int i = 0; i < tokens_cur.size();i++){
+                
+//                WHISPER_LOG_INFO("[bset %d] %d id: %d, text: %s, tid: %d %s, p: %f, plog: %f, pt: %f, ptsum:  %f, \n",
+//                                 __LINE__, i,
+//                                 tokens_cur[i].id, ctx->vocab.id_to_token[tokens_cur[i].id].c_str(),
+//                                 tokens_cur[i].tid, ctx->vocab.id_to_token[tokens_cur[i].tid].c_str(),
+//                                 tokens_cur[i].p,
+//                                 tokens_cur[i].plog,
+//                                 tokens_cur[i].pt,
+//                                 tokens_cur[i].ptsum);
+            }
+            float _no_speech_prob = best_decoder.no_speech_prob;
+            float _eot_prob = best_decoder.eot_prob;
+//            WHISPER_LOG_INFO("[best %d] _tt_prob tt: %f, nosp  %f, shift nosp: %f, eot: %f, nosp seq: %f \n",
+//                             __LINE__, _tt_prob,
+//                             _no_speech_prob, _shift_nosp_prob,
+//                             _eot_prob, _non_speech_probs_from_sequence);
+                
 
             // update prompt_past
             prompt_past.clear();
@@ -5979,7 +6139,7 @@ int whisper_full_with_state(
 
                             //printf("tt0 = %d, tt1 = %d, text = %s, token = %s, token_id = %d, tid = %d\n", tt0, tt1, text.c_str(), ctx->vocab.id_to_token[tokens_cur[i].id].c_str(), tokens_cur[i].id, tokens_cur[i].tid);
 
-                            result_all.push_back({ tt0, tt1, text, {}, speaker_turn_next });
+                            result_all.push_back({ tt0, tt1, text, {}, _non_speech_probs_from_sequence, speaker_turn_next });
                             for (int j = i0; j <= i; j++) {
                                 result_all.back().tokens.push_back(tokens_cur[j]);
                             }
@@ -6024,7 +6184,7 @@ int whisper_full_with_state(
                         }
                     }
 
-                    result_all.push_back({ tt0, tt1, text, {} , speaker_turn_next });
+                    result_all.push_back({ tt0, tt1, text, {} , _non_speech_probs_from_sequence,speaker_turn_next });
                     for (int j = i0; j < (int) tokens_cur.size(); j++) {
                         result_all.back().tokens.push_back(tokens_cur[j]);
                     }

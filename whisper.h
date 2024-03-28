@@ -531,6 +531,7 @@ extern "C" {
         float entropy_thold;    // similar to OpenAI's "compression_ratio_threshold"
         float logprob_thold;
         float no_speech_thold;  // TODO: not implemented
+        bool heuristic;
 
         struct {
             int best_of;    // ref: https://github.com/openai/whisper/blob/f82bc59f5ea234d4b97fb2860842ed38519f7e65/whisper/transcribe.py#L264
@@ -647,6 +648,15 @@ extern "C" {
     // Get the probability of the specified token in the specified segment
     WHISPER_API float whisper_full_get_token_p           (struct whisper_context * ctx, int i_segment, int i_token);
     WHISPER_API float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_segment, int i_token);
+
+    // spk turn
+    WHISPER_API bool whisper_full_get_segment_spk_turn(struct whisper_context * ctx, int i_segment);
+
+    // lang id prob
+    WHISPER_API float whisper_full_get_segment_lang_id_prob(struct whisper_context * ctx);
+
+    // no speech prob
+    WHISPER_API float whisper_full_get_segment_no_speech_prob(struct whisper_context * ctx, int i_segment);
 
     ////////////////////////////////////////////////////////////////////////////
 
