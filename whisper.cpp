@@ -851,6 +851,8 @@ struct whisper_state {
 
     int lang_id = 0; // english by default
 
+    float lang_id_prob = 0;
+
     std::string path_model; // populated by whisper_init_from_file_with_params()
 
 #ifdef WHISPER_USE_COREML
@@ -5365,6 +5367,7 @@ int whisper_full_with_state(
         params.language = whisper_lang_str(lang_id);
 
         WHISPER_LOG_INFO("%s: auto-detected language: %s (p = %f)\n", __func__, params.language, probs[whisper_lang_id(params.language)]);
+        state->lang_id_prob = probs[whisper_lang_id(params.language)];        
         if (params.detect_language) {
             return 0;
         }
@@ -6436,6 +6439,20 @@ float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_se
 float whisper_full_get_token_p(struct whisper_context * ctx, int i_segment, int i_token) {
     return ctx->state->result_all[i_segment].tokens[i_token].p;
 }
+
+
+bool whisper_full_get_segment_spk_turn(struct whisper_context * ctx, int i_segment) {
+    return ctx->state->result_all[i_segment].speaker_turn_next;
+}
+
+float whisper_full_get_segment_lang_id_prob(struct whisper_context * ctx) {
+    return ctx->state->lang_id_prob;
+}
+
+float whisper_full_get_segment_no_speech_prob(struct whisper_context * ctx, int i_segment) {
+    return ctx->state->result_all[i_segment].no_speech_prob;
+}
+
 
 // =================================================================================================
 
