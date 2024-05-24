@@ -4850,6 +4850,9 @@ static void whisper_process_logits(
             }
         }
 
+        // suppress thank you
+        logits[vocab.token_beg] = -INFINITY;
+
         // suppress sot and nosp tokens
         logits[vocab.token_sot]  = -INFINITY;
         logits[vocab.token_nosp] = -INFINITY; // TODO: ignore this token for now
