@@ -6241,7 +6241,6 @@ int whisper_full_with_state(
             if (!tokens_cur.empty() && ctx->model.n_loaded > 0) {
                 int  i0 = 0;
                 auto t0 = seek + 2*(tokens_cur.front().tid - whisper_token_beg(ctx)) + previous_transcribe_last_result_t1;
-                WHISPER_LOG_INFO("[whisper.cpp:6243] t0 : %d\n", t0);
                 std::string text;
                 bool speaker_turn_next = false;
 
@@ -6268,7 +6267,7 @@ int whisper_full_with_state(
 
                             if (params.print_realtime) {
                                 if (params.print_timestamps) {
-                                    printf("[%s --> %s]  %s\n", to_timestamp(tt0).c_str(), to_timestamp(tt1).c_str(), text.c_str());
+                                    printf("[whisper cpp: 6271][%s --> %s]  %s\n", to_timestamp(tt0).c_str(), to_timestamp(tt1).c_str(), text.c_str());
                                 } else {
                                     printf("%s", text.c_str());
                                     fflush(stdout);
@@ -6315,7 +6314,7 @@ int whisper_full_with_state(
 
                     if (params.print_realtime) {
                         if (params.print_timestamps) {
-                            printf("[%s --> %s]  %s\n", to_timestamp(tt0).c_str(), to_timestamp(tt1).c_str(), text.c_str());
+                            printf("[whisper.cpp: 6318][%s --> %s]  %s\n", to_timestamp(tt0).c_str(), to_timestamp(tt1).c_str(), text.c_str());
                         } else {
                             printf("%s", text.c_str());
                             fflush(stdout);
