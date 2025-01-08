@@ -38,7 +38,9 @@ let package = Package(
                 "ggml/src/ggml-backend.cpp",
                 "ggml/src/ggml-cpu.c",
                 "ggml/src/ggml-quants.c",
-                "ggml/src/ggml-metal.m"
+                "ggml/src/ggml-metal.m",
+                "coreml/whisper-encoder.mm",
+                "coreml/whisper-encoder-impl.m"
             ],
             resources: [.process("ggml/src/ggml-metal.metal")],
             publicHeadersPath: "spm-headers",
@@ -47,7 +49,8 @@ let package = Package(
                 .define("GGML_USE_ACCELERATE"),
                 .unsafeFlags(["-fno-objc-arc"]),
                 .define("GGML_USE_METAL"),
-                .define("WHISPER_USE_COREML")
+                .define("WHISPER_USE_COREML"),
+                .define("WHISPER_COREML_ALLOW_FALLBACK")
                 // NOTE: NEW_LAPACK will required iOS version 16.4+
                 // We should consider add this in the future when we drop support for iOS 14
                 // (ref: ref: https://developer.apple.com/documentation/accelerate/1513264-cblas_sgemm?language=objc)
