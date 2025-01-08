@@ -850,6 +850,7 @@ struct whisper_state {
     std::vector<whisper_token>   prompt_past;
 
     int lang_id = 0; // english by default
+    float lang_id_prob = 0;
 
     std::string path_model; // populated by whisper_init_from_file_with_params()
 
@@ -4922,6 +4923,9 @@ static void whisper_process_logits(
             }
         }
 
+        // suppress thank you
+        logits[vocab.token_beg] = -INFINITY;
+
         // suppress sot and nosp tokens
         logits[vocab.token_sot]  = -INFINITY;
         logits[vocab.token_nosp] = -INFINITY;
@@ -5342,6 +5346,15 @@ int whisper_full_with_state(
     // clear old results
     auto & result_all = state->result_all;
 
+
+    int64_t previous_transcribe_last_result_t1 = 0;
+    WHISPER_LOG_INFO("previous result all size: %d\n", result_all.size());
+    // get last result t1
+    if (result_all.size() > 0) {
+        WHISPER_LOG_INFO("previous result all back t0, b1: %d %d\n", result_all.back().t0,result_all.back().t1);
+        previous_transcribe_last_result_t1 = result_all.back().t1;
+    }
+
     result_all.clear();
 
     if (n_samples > 0) {
@@ -5365,6 +5378,7 @@ int whisper_full_with_state(
         params.language = whisper_lang_str(lang_id);
 
         WHISPER_LOG_INFO("%s: auto-detected language: %s (p = %f)\n", __func__, params.language, probs[whisper_lang_id(params.language)]);
+        state->lang_id_prob = probs[whisper_lang_id(params.language)];
         if (params.detect_language) {
             return 0;
         }
@@ -6111,7 +6125,8 @@ int whisper_full_with_state(
 
             if (!tokens_cur.empty() && ctx->model.n_loaded > 0 && !is_no_speech) {
                 int  i0 = 0;
-                auto t0 = seek + 2*(tokens_cur.front().tid - whisper_token_beg(ctx));
+                auto t0 = seek + 2*(tokens_cur.front().tid - whisper_token_beg(ctx)) + previous_transcribe_last_result_t1;
+                WHISPER_LOG_INFO("[whisper.cpp:6124] t0 : %d\n", t0);
 
                 std::string text;
                 bool speaker_turn_next = false;
@@ -6131,7 +6146,7 @@ int whisper_full_with_state(
                     }
 
                     if (tokens_cur[i].id > whisper_token_beg(ctx) && !params.single_segment) {
-                        const auto t1 = seek + 2*(tokens_cur[i].tid - whisper_token_beg(ctx));
+                        const auto t1 = seek + 2*(tokens_cur[i].tid - whisper_token_beg(ctx)) + previous_transcribe_last_result_t1;
 
                         if (!text.empty()) {
                             const auto tt0 = t0;
@@ -6463,6 +6478,15 @@ float whisper_full_get_token_p(struct whisper_context * ctx, int i_segment, int 
 float whisper_full_get_segment_no_speech_prob(struct whisper_context * ctx, int i_segment) {
     return ctx->state->result_all[i_segment].no_speech_prob;
 }
+
+bool whisper_full_get_segment_spk_turn(struct whisper_context * ctx, int i_segment) {
+    return ctx->state->result_all[i_segment].speaker_turn_next;
+}
+
+float whisper_full_get_segment_lang_id_prob(struct whisper_context * ctx) {
+    return ctx->state->lang_id_prob;
+}
+
 
 // =================================================================================================
 
