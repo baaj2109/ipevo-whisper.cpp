@@ -28,7 +28,8 @@ let package = Package(
                "tests",
                "CMakeLists.txt",
                "Makefile",
-               "ggml/src/ggml-metal-embed.metal"
+               "ggml/src/ggml-metal-embed.metal",
+               "ggml/src/ggml-metal.m",
             ],
             sources: [
                 "ggml/src/ggml.c",
@@ -38,7 +39,7 @@ let package = Package(
                 "ggml/src/ggml-backend.cpp",
                 "ggml/src/ggml-cpu.c",
                 "ggml/src/ggml-quants.c",
-                "ggml/src/ggml-metal.m",
+//                "ggml/src/ggml-metal.m",
                 "src/coreml/whisper-encoder.mm",
                 "src/coreml/whisper-encoder-impl.m"
             ],
@@ -50,7 +51,10 @@ let package = Package(
                 .unsafeFlags(["-fno-objc-arc"]),
                 .define("WHISPER_USE_COREML"),
                 .define("WHISPER_COREML_ALLOW_FALLBACK"),
-                .define("GGML_USE_METAL")
+//                .define("GGML_USE_METAL"),
+                
+                    .unsafeFlags(["-fobjc-arc"])
+                
                 // NOTE: NEW_LAPACK will required iOS version 16.4+
                 // We should consider add this in the future when we drop support for iOS 14
                 // (ref: ref: https://developer.apple.com/documentation/accelerate/1513264-cblas_sgemm?language=objc)
