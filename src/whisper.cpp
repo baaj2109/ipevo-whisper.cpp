@@ -456,6 +456,9 @@ struct whisper_segment {
 
     std::vector<whisper_token_data> tokens;
 
+    float no_speech_prob;
+
+    
     bool speaker_turn_next;
 };
 
@@ -775,7 +778,8 @@ struct whisper_sequence {
 
     // the accumulated transcription in the current iteration (used to truncate the tokens array)
     int result_len;
-
+    
+    double no_speech_probs;  // the probability of the silence
     double sum_logprobs_all; // the sum of the log probabilities of the tokens
     double sum_logprobs;     // the sum of the log probabilities of the tokens (first result_len tokens)
     double avg_logprobs;     // the average log probability of the tokens
@@ -785,6 +789,7 @@ struct whisper_sequence {
 
 // TAGS: WHISPER_DECODER_INIT
 struct whisper_decoder {
+    
     // the currently generated sequence of tokens
     whisper_sequence sequence;
 
@@ -875,6 +880,8 @@ struct whisper_state {
 
     int lang_id = 0; // english by default
 
+    float lang_id_prob = 0;
+    
     std::string path_model; // populated by whisper_init_from_file_with_params()
 
 #ifdef WHISPER_USE_COREML
@@ -4902,6 +4909,44 @@ static int whisper_wrap_segment(struct whisper_context & ctx, struct whisper_sta
     return res;
 }
 
+
+
+// ref: https://github.com/openai/whisper/blob/ba3f3cd54b0e5b8ce1ab3de13e32122d0d5f98ab/whisper/decoding.py#L689-L693
+static void whisper_no_speech_probs(
+              struct whisper_context & ctx,
+               struct whisper_state  & state,
+              struct whisper_decoder & decoder,
+          std::vector<whisper_token> & prompt_init) {
+
+    const auto & vocab= ctx.vocab;
+    const int  n_logits = vocab.id_to_token.size();
+    const int  logits_offset = decoder.i_batch - (prompt_init.size() - 1);
+    double no_speech_probs = 0.0;
+
+    WHISPER_ASSERT(n_logits == ctx.vocab.n_vocab);
+
+    // extract the logits for the SOT token
+    // we will be mutating, and therefore we don't want to use the ctx.logits buffer directly
+    auto & logits   = decoder.logits;
+    {
+        logits.resize(n_logits);
+        memcpy(logits.data(), state.logits.data() + logits_offset*n_logits, n_logits*sizeof(float));
+    }
+
+    // softmax
+    // ref: https://pytorch.org/docs/stable/generated/torch.nn.Softmax.html
+    {
+        double sum = 0.0f;
+        for (auto & i : logits) {
+            sum += expf(i);
+        }
+        no_speech_probs = static_cast<double>(expf(logits[vocab.token_nosp]) / sum);
+    }
+
+    decoder.sequence.no_speech_probs = no_speech_probs;
+}
+
+
 static const std::vector<std::string> non_speech_tokens = {
     "\"", "#", "(", ")", "*", "+", "/", ":", ";", "<", "=", ">", "@", "[", "\\", "]", "^",
     "_", "`", "{", "|", "}", "~", "「", "」", "『", "』", "<<", ">>", "<<<", ">>>", "--",
@@ -4967,6 +5012,10 @@ static void whisper_process_logits(
                 logits[i] = -INFINITY;
             }
         }
+        
+        // suppress thank you
+        logits[vocab.token_beg] = -INFINITY;
+
 
         // suppress sot and nosp tokens
         logits[vocab.token_sot]  = -INFINITY;
@@ -5436,6 +5485,7 @@ int whisper_full_with_state(
         params.language = whisper_lang_str(lang_id);
 
         WHISPER_LOG_INFO("%s: auto-detected language: %s (p = %f)\n", __func__, params.language, probs[whisper_lang_id(params.language)]);
+        state->lang_id_prob = probs[whisper_lang_id(params.language)];
         if (params.detect_language) {
             return 0;
         }
@@ -5735,6 +5785,8 @@ int whisper_full_with_state(
                     const int64_t t_start_sample_us = ggml_time_us();
 
                     state->decoders[0].i_batch = prompt.size() - 1;
+                    
+                    whisper_no_speech_probs(*ctx, *state, state->decoders[0], prompt_init);
 
                     whisper_process_logits(*ctx, *state, state->decoders[0], params, t_cur);
 
@@ -6149,6 +6201,9 @@ int whisper_full_with_state(
 
             const auto & tokens_cur = best_decoder.sequence.tokens;
 
+            float _non_speech_probs_from_sequence = best_decoder.sequence.no_speech_probs;
+
+            
             // [EXPERIMENTAL] Token-level timestamps with DTW
             const auto n_segments_before = state->result_all.size();
 
@@ -6203,7 +6258,7 @@ int whisper_full_with_state(
 
                             //printf("tt0 = %d, tt1 = %d, text = %s, token = %s, token_id = %d, tid = %d\n", tt0, tt1, text.c_str(), ctx->vocab.id_to_token[tokens_cur[i].id].c_str(), tokens_cur[i].id, tokens_cur[i].tid);
 
-                            result_all.push_back({ tt0, tt1, text, {}, speaker_turn_next });
+                            result_all.push_back({ tt0, tt1, text, {}, _non_speech_probs_from_sequence, speaker_turn_next });
                             for (int j = i0; j <= i; j++) {
                                 result_all.back().tokens.push_back(tokens_cur[j]);
                             }
@@ -6248,7 +6303,7 @@ int whisper_full_with_state(
                         }
                     }
 
-                    result_all.push_back({ tt0, tt1, text, {} , speaker_turn_next });
+                    result_all.push_back({ tt0, tt1, text, {} , _non_speech_probs_from_sequence, speaker_turn_next });
                     for (int j = i0; j < (int) tokens_cur.size(); j++) {
                         result_all.back().tokens.push_back(tokens_cur[j]);
                     }
@@ -6505,6 +6560,19 @@ float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_se
 float whisper_full_get_token_p(struct whisper_context * ctx, int i_segment, int i_token) {
     return ctx->state->result_all[i_segment].tokens[i_token].p;
 }
+
+bool whisper_full_get_segment_spk_turn(struct whisper_context * ctx, int i_segment) {
+    return ctx->state->result_all[i_segment].speaker_turn_next;
+}
+
+float whisper_full_get_segment_lang_id_prob(struct whisper_context * ctx) {
+    return ctx->state->lang_id_prob;
+}
+
+float whisper_full_get_segment_no_speech_prob(struct whisper_context * ctx, int i_segment) {
+    return ctx->state->result_all[i_segment].no_speech_prob;
+}
+
 
 // =================================================================================================
 
