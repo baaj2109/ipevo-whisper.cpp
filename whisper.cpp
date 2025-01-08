@@ -6240,7 +6240,8 @@ int whisper_full_with_state(
 
             if (!tokens_cur.empty() && ctx->model.n_loaded > 0) {
                 int  i0 = 0;
-                auto t0 = seek + 2*(tokens_cur.front().tid - whisper_token_beg(ctx)) + previous_transcribe_last_result_t1;
+                auto t0 = seek + 2*(tokens_cur.front().tid - whisper_token_beg(ctx)); // + previous_transcribe_last_result_t1;
+//                WHISPER_LOG_INFO("[whisper.cpp:6243] t0 : %d\n", t0);
                 std::string text;
                 bool speaker_turn_next = false;
 
