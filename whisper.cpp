@@ -5466,11 +5466,11 @@ int whisper_full_with_state(
     
     
     int64_t previous_transcribe_last_result_t1 = 0;
-    WHISPER_LOG_INFO("previous result all size: %d\n", result_all.size());
+    // WHISPER_LOG_INFO("previous result all size: %d\n", result_all.size());
     // get last result t1
     if (result_all.size() > 0) {
-        WHISPER_LOG_INFO("previous result all back t0, b1: %d %d\n", result_all.back().t0,result_all.back().t1);
-        previous_transcribe_last_result_t1 = result_all.back().t1;
+        // WHISPER_LOG_INFO("previous result all back t0, b1: %d %d\n", result_all.back().t0,result_all.back().t1);
+        // previous_transcribe_last_result_t1 = result_all.back().t1;
     }
 
     result_all.clear();
